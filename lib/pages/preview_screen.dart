@@ -16,33 +16,46 @@ class PreviewScreen extends StatefulWidget {
 }
 
 class _PreviewScreenState extends State<PreviewScreen> {
-  late VideoPlayerController _controller;
+  VideoPlayerController? _controller;
   bool _isSaving = false;
+
+  bool get _isPhoto =>
+      widget.videoPath.toLowerCase().endsWith('.jpg') ||
+      widget.videoPath.toLowerCase().endsWith('.jpeg');
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.file(File(widget.videoPath))
-      ..initialize().then((_) {
-        setState(() {});
-        _controller.setLooping(true);
-        _controller.play();
-      });
+    if (!_isPhoto) {
+      _controller = VideoPlayerController.file(File(widget.videoPath))
+        ..initialize().then((_) {
+          if (mounted) setState(() {});
+          _controller?.setLooping(true);
+          _controller?.play();
+        });
+    }
   }
 
-  Future<void> _saveVideo() async {
+  Future<void> _saveMedia() async {
     setState(() => _isSaving = true);
     try {
-      await Gal.putVideo(widget.videoPath);
+      if (_isPhoto) {
+        await Gal.putImage(widget.videoPath);
+      } else {
+        await Gal.putVideo(widget.videoPath);
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Video saved to gallery!')),
+          SnackBar(
+            content: Text(_isPhoto ? 'Photo saved to gallery!' : 'Video saved to gallery!'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save video: $e')),
+          SnackBar(content: Text('Failed to save media: $e')),
         );
       }
     } finally {
@@ -54,8 +67,41 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    _controller?.dispose();
     super.dispose();
+  }
+
+  Widget _buildMediaContent() {
+    if (_isPhoto) {
+      return Image.file(
+        File(widget.videoPath),
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: double.infinity,
+      );
+    }
+
+    if (_controller != null && _controller!.value.isInitialized) {
+      return GestureDetector(
+        onTap: () {
+          setState(() {
+            _controller!.value.isPlaying
+                ? _controller!.pause()
+                : _controller!.play();
+          });
+        },
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: _controller!.value.aspectRatio,
+            child: VideoPlayer(_controller!),
+          ),
+        ),
+      );
+    }
+
+    return const Center(
+      child: CircularProgressIndicator(color: Colors.white),
+    );
   }
 
   @override
@@ -64,28 +110,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          if (_controller.value.isInitialized)
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  _controller.value.isPlaying
-                      ? _controller.pause()
-                      : _controller.play();
-                });
-              },
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
-                ),
-              ),
-            ),
-          
-          if (!_controller.value.isInitialized)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
-            
+          _buildMediaContent(),
+
           // Back button
           Positioned(
             top: 50,
@@ -95,15 +121,15 @@ class _PreviewScreenState extends State<PreviewScreen> {
               onPressed: () => Navigator.of(context).pop(),
             ),
           ),
-          
+
           // Save button
           Positioned(
             bottom: 30,
             right: 16,
             child: FloatingActionButton(
               backgroundColor: Theme.of(context).colorScheme.primary,
-              onPressed: _isSaving ? null : _saveVideo,
-              child: _isSaving 
+              onPressed: _isSaving ? null : _saveMedia,
+              child: _isSaving
                   ? const CircularProgressIndicator(color: Colors.white)
                   : const Icon(Icons.save_alt, color: Colors.white),
             ),
