@@ -156,7 +156,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
-                  // TikTok Top Header Bar
+                  // Top Header Bar
                   if (cameraState.status != CameraStatus.recording)
                     Positioned(
                       top: 50,
@@ -168,27 +168,6 @@ class _CameraScreenState extends State<CameraScreen> {
                           IconButton(
                             icon: const Icon(Icons.close, color: Colors.white, size: 28),
                             onPressed: () {},
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.4),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.music_note, color: Colors.white, size: 16),
-                                SizedBox(width: 6),
-                                Text(
-                                  "Add sound",
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ],
-                            ),
                           ),
                           const SizedBox(width: 28),
                         ],
