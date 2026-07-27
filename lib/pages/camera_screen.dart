@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:camera/camera.dart';
@@ -21,9 +22,20 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen> {
   bool _showFilters = false;
+
+  // Zoom: we track the zoom at the start of each pinch separately.
+  // This prevents the "jump" bug caused by multiplying the running zoom by a new scale factor mid-gesture.
+  double _baseZoom = 1.0;
   double _currentZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
+
+  // Tap-to-focus ring: stores the screen position of the last tap, clears after a short delay.
+  Offset? _focusPoint;
+  Timer? _focusTimer;
+
+  // Countdown timer for delayed capture (Off / 3s / 10s)
+  int _countdownSeconds = 0; // 0 = off, 3 = 3s, 10 = 10s
 
   @override
   void initState() {
@@ -31,17 +43,63 @@ class _CameraScreenState extends State<CameraScreen> {
     context.read<CameraCubit>().initialize();
   }
 
-  void _handleScaleUpdate(ScaleUpdateDetails details, CameraController controller) {
-    double scale = _currentZoom * details.scale;
-    if (scale < _minZoom) scale = _minZoom;
-    if (scale > _maxZoom) scale = _maxZoom;
-    controller.setZoomLevel(scale);
+  @override
+  void dispose() {
+    _focusTimer?.cancel();
+    super.dispose();
   }
 
-  void _handleScaleEnd(ScaleEndDetails details, CameraController controller) {
-    // Persist the final zoom level for the next pinch gesture
-    _currentZoom = _currentZoom * details.velocity.pixelsPerSecond.distance.clamp(0.8, 1.2);
-    _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
+  // Called when the pinch gesture starts — saves the zoom level we were at BEFORE the new pinch.
+  // Without this, each new pinch starts from the default scale factor (1.0), causing a zoom jump.
+  Future<void> _onScaleStart(ScaleStartDetails details, CameraController controller) async {
+    _baseZoom = _currentZoom;
+    _minZoom = await controller.getMinZoomLevel();
+    _maxZoom = await controller.getMaxZoomLevel();
+  }
+
+  // Called every frame during pinch — multiplies the base (start) zoom by the gesture's scale factor.
+  void _onScaleUpdate(ScaleUpdateDetails details, CameraController controller) {
+    if (details.pointerCount < 2) return; // ignore single-finger swipes
+    final newZoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
+    _currentZoom = newZoom;
+    controller.setZoomLevel(newZoom);
+  }
+
+  // Called when user lifts fingers — nothing to do, _currentZoom is already correct.
+  void _onScaleEnd(ScaleEndDetails _) {}
+
+  // Called on tap — sets focus & exposure point and shows a visual ring at that position.
+  void _onTapFocus(TapDownDetails details, CameraController controller) {
+    final size = MediaQuery.of(context).size;
+
+    // Camera expects a normalized offset (0.0 to 1.0), not raw pixels.
+    final normalized = Offset(
+      details.localPosition.dx / size.width,
+      details.localPosition.dy / size.height,
+    );
+
+    controller.setFocusPoint(normalized);
+    controller.setExposurePoint(normalized); // also move exposure to where you tapped
+
+    // Show focus ring at tap position, then remove it after 1.5 seconds.
+    _focusTimer?.cancel();
+    setState(() => _focusPoint = details.localPosition);
+    _focusTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _focusPoint = null);
+    });
+  }
+
+  void _cycleCountdown() {
+    setState(() {
+      // Cycles: 0 → 3 → 10 → 0
+      if (_countdownSeconds == 0) {
+        _countdownSeconds = 3;
+      } else if (_countdownSeconds == 3) {
+        _countdownSeconds = 10;
+      } else {
+        _countdownSeconds = 0;
+      }
+    });
   }
 
   @override
@@ -56,13 +114,12 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ).then((_) {
             if (!mounted) return;
-            // When returning from preview, reset state to ready.
             cubit.reset();
           });
         }
       },
       builder: (context, cameraState) {
-        if (cameraState.status == CameraStatus.initial || 
+        if (cameraState.status == CameraStatus.initial ||
             cameraState.status == CameraStatus.loading) {
           return const Scaffold(
             backgroundColor: Colors.black,
@@ -119,29 +176,19 @@ class _CameraScreenState extends State<CameraScreen> {
               backgroundColor: Colors.black,
               body: Stack(
                 children: [
-                  // Camera View Placeholder with active filter
+                  // Live camera preview with color filter applied
                   if (controller != null && controller.value.isInitialized)
                     FilteredPreview(
                       filterType: filterState.selectedFilter,
                       child: GestureDetector(
-                        onScaleStart: (details) async {
-                          // Note: controller doesn't have getZoomLevel(), so we use our tracked _currentZoom
-                          _minZoom = await controller.getMinZoomLevel();
-                          _maxZoom = await controller.getMaxZoomLevel();
-                        },
-                        onScaleUpdate: (details) => _handleScaleUpdate(details, controller),
-                        onScaleEnd: (details) => _handleScaleEnd(details, controller),
-                        onTapDown: (details) {
-                          // Tap to focus
-                          final offset = Offset(
-                            details.localPosition.dx / MediaQuery.of(context).size.width,
-                            details.localPosition.dy / MediaQuery.of(context).size.height,
-                          );
-                          controller.setFocusPoint(offset);
-                        },
+                        onScaleStart: (d) => _onScaleStart(d, controller),
+                        onScaleUpdate: (d) => _onScaleUpdate(d, controller),
+                        onScaleEnd: (d) => _onScaleEnd(d),
+                        onTapDown: (d) => _onTapFocus(d, controller),
                         child: Builder(
                           builder: (context) {
                             final size = MediaQuery.of(context).size;
+                            // Scale the preview to fill the screen without stretching
                             var scale = size.aspectRatio * controller.value.aspectRatio;
                             if (scale < 1) scale = 1 / scale;
 
@@ -156,7 +203,22 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
-                  // Top Header Bar
+                  // Focus ring: appears at the tap position for 1.5 seconds then fades
+                  if (_focusPoint != null)
+                    Positioned(
+                      left: _focusPoint!.dx - 35,
+                      top: _focusPoint!.dy - 35,
+                      child: Container(
+                        width: 70,
+                        height: 70,
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.yellow, width: 2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
+
+                  // Top Header Bar (hidden during recording)
                   if (cameraState.status != CameraStatus.recording)
                     Positioned(
                       top: 50,
@@ -174,7 +236,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
-                  // Timer overlay when recording
+                  // Recording timer HUD
                   if (cameraState.status == CameraStatus.recording)
                     Positioned(
                       top: 50,
@@ -187,20 +249,18 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
-                  // Controls Overlay (Flip camera, Flash, Filters)
+                  // Side controls (hidden during recording)
                   if (cameraState.status != CameraStatus.recording)
                     ControlsOverlay(
                       isFlashOn: cameraState.isFlashOn,
+                      timerSeconds: _countdownSeconds,
                       onFlipCamera: () => context.read<CameraCubit>().toggleCamera(),
                       onToggleFlash: () => context.read<CameraCubit>().toggleFlash(),
-                      onOpenFilters: () {
-                        setState(() {
-                          _showFilters = !_showFilters;
-                        });
-                      },
+                      onOpenFilters: () => setState(() => _showFilters = !_showFilters),
+                      onToggleTimer: _cycleCountdown,
                     ),
 
-                  // Bottom Controls (Record button and Filter selector)
+                  // Bottom: filter picker + record button
                   Positioned(
                     bottom: 30,
                     left: 0,
