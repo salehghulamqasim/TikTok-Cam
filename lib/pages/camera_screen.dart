@@ -34,8 +34,12 @@ class _CameraScreenState extends State<CameraScreen> {
   Offset? _focusPoint;
   Timer? _focusTimer;
 
-  // Countdown timer for delayed capture (Off / 3s / 10s)
-  int _countdownSeconds = 0; // 0 = off, 3 = 3s, 10 = 10s
+  // Countdown timer setting (Off / 3s / 10s) — how long to wait before taking a photo.
+  int _countdownSeconds = 0;
+
+  // Active countdown: counts down from _countdownSeconds to 0, then takes the photo.
+  int _activeCountdown = 0;
+  Timer? _countdownTimer;
 
   @override
   void initState() {
@@ -46,6 +50,7 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void dispose() {
     _focusTimer?.cancel();
+    _countdownTimer?.cancel();
     super.dispose();
   }
 
@@ -91,13 +96,35 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _cycleCountdown() {
     setState(() {
-      // Cycles: 0 → 3 → 10 → 0
+      // Cycles: Off → 3s → 10s → Off
       if (_countdownSeconds == 0) {
         _countdownSeconds = 3;
       } else if (_countdownSeconds == 3) {
         _countdownSeconds = 10;
       } else {
         _countdownSeconds = 0;
+      }
+    });
+  }
+
+  // If a timer is set, count down then take photo. Otherwise take photo immediately.
+  void _handleTakePhoto() {
+    if (_countdownSeconds == 0) {
+      context.read<CameraCubit>().takePhoto();
+      return;
+    }
+
+    // Cancel any previous countdown that might still be running.
+    _countdownTimer?.cancel();
+    setState(() => _activeCountdown = _countdownSeconds);
+
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_activeCountdown <= 1) {
+        timer.cancel();
+        setState(() => _activeCountdown = 0);
+        context.read<CameraCubit>().takePhoto();
+      } else {
+        setState(() => _activeCountdown--);
       }
     });
   }
@@ -249,6 +276,22 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
+                  // Countdown number shown in the center of the screen
+                  if (_activeCountdown > 0)
+                    Center(
+                      child: Text(
+                        '$_activeCountdown',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 120,
+                          fontWeight: FontWeight.bold,
+                          shadows: [
+                            Shadow(blurRadius: 20, color: Colors.black54),
+                          ],
+                        ),
+                      ),
+                    ),
+
                   // Side controls (hidden during recording)
                   if (cameraState.status != CameraStatus.recording)
                     ControlsOverlay(
@@ -279,7 +322,7 @@ class _CameraScreenState extends State<CameraScreen> {
                         ],
                         RecordButton(
                           isRecording: cameraState.status == CameraStatus.recording,
-                          onTapPhoto: () => context.read<CameraCubit>().takePhoto(),
+                          onTapPhoto: _handleTakePhoto, // uses countdown if set
                           onLongPressStartVideo: () => context.read<CameraCubit>().startRecording(),
                           onLongPressEndVideo: () => context.read<CameraCubit>().stopRecording(),
                         ),
